@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>Shopping list</title>
+<!--
+  A shopping list from Marv, to tick off in the shop. The whole list is
+  in this page's link, after the "#": a browser never sends that part to
+  any server, so the list goes nowhere but this phone. This one file asks
+  for nothing else from anywhere: no fonts, pictures or scripts. Ticks are
+  kept on this phone only. See README.md.
+-->
+<style>
+  :root {
+    --bg: #f3f0ea; --card: #ffffff; --line: rgba(26, 24, 20, 0.16);
+    --text: #1a1814; --text-2: #4b463e; --mark: #855000;
+    --fill: #ffb547; --on-fill: #1d1607;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12110e; --card: #1f1d18; --line: rgba(255, 255, 255, 0.14);
+      --text: #f4f1ea; --text-2: #bcb7ac; --mark: #ffb547;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--text); }
+  body { margin: 0; line-height: 1.3; overflow-wrap: anywhere; }
+  .app { max-width: 40rem; margin: 0 auto; padding: 1rem 0.75rem 3rem; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; margin: 0.25rem 0.25rem 0.75rem; }
+  h1 { margin: 0; font-size: 1.75rem; font-weight: 700; }
+  .count { margin: 0; font-size: 1.25rem; font-weight: 700; color: var(--text-2); }
+  .msg { margin: 1.5rem 0.25rem; font-size: 1.25rem; }
+  .cut { margin: 0 0.25rem 0.75rem; padding: 0.75rem 1rem; border: 2px solid var(--mark); border-radius: 0.75rem; font-size: 1.05rem; }
+  .part { margin: 0 0 0.75rem; background: var(--card); border: 1px solid var(--line); border-radius: 1rem; overflow: hidden; }
+  .part h2 { margin: 0; padding: 0.75rem 1rem 0.25rem; font-size: 1rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
+  .row {
+    display: flex; align-items: center; gap: 0.875rem; width: 100%; min-height: 3.5rem;
+    padding: 0.5rem 1rem; border: 0; border-top: 1px solid var(--line); background: none; color: inherit;
+    font: inherit; font-size: 1.25rem; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .part h2 + .row { border-top: 0; }
+  .row:active { background: var(--line); }
+  .row:focus-visible { outline: 3px solid var(--mark); outline-offset: -3px; }
+  .box { flex: none; width: 2rem; height: 2rem; border: 3px solid var(--text-2); border-radius: 50%; display: grid; place-items: center; }
+  .box svg { width: 1.25rem; height: 1.25rem; }
+  .words { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .amount { margin-left: 0.4rem; font-weight: 400; color: var(--text-2); }
+  .low { flex: none; padding: 0.15rem 0.6rem; border: 2px solid var(--mark); border-radius: 999px; color: var(--mark); font-size: 0.95rem; font-weight: 700; }
+  .got h2 { color: var(--text-2); }
+  .got .row .box { background: var(--fill); border-color: var(--fill); color: var(--on-fill); }
+  .got .row .name { font-weight: 400; text-decoration: line-through; text-decoration-thickness: 2px; color: var(--text-2); }
+  .done { margin: 0.5rem 0.25rem 1rem; font-size: 1.5rem; font-weight: 700; }
+  .note { margin: 1.25rem 0.25rem 0; font-size: 1rem; color: var(--text-2); }
+</style>
+</head>
+<body>
+<main class="app">
+<noscript><p class="msg">This page needs JavaScript to show the list.</p></noscript>
+</main>
+<script>
+(function () {
+  "use strict";
+// -- unpack: begin --
+var SHOP_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+var SHOP_MAX_TEXT = 256 * 1024; // more than any list; a bigger one is damaged
+
+// Strict: only the alphabet, never a length that leaves a lone character,
+// and the last character's unused bits zero, so one text is one set of bytes.
+function b64urlDecode(s) {
+  if (s.length % 4 === 1) return null;
+  var out = new Uint8Array(Math.floor((s.length * 3) / 4));
+  var acc = 0, bits = 0, n = 0;
+  for (var i = 0; i < s.length; i++) {
+    var v = SHOP_B64.indexOf(s.charAt(i));
+    if (v < 0) return null;
+    acc = ((acc << 6) | v) & 0xffffff;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[n++] = (acc >> bits) & 255;
+    }
+  }
+  if (acc & ((1 << bits) - 1)) return null;
+  return out;
+}
+
+var SHOP_CRC = null;
+function crc32(bytes) {
+  if (!SHOP_CRC) {
+    SHOP_CRC = new Uint32Array(256);
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      SHOP_CRC[n] = c;
+    }
+  }
+  var crc = 0xffffffff;
+  for (var i = 0; i < bytes.length; i++) crc = SHOP_CRC[(crc ^ bytes[i]) & 255] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// Raw deflate (RFC 1951), all three kinds of block, after puff.c. Throws
+// on anything malformed, or on more than max bytes out.
+var SHOP_LEN_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+var SHOP_LEN_EXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+var SHOP_DIST_BASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073,
+  4097, 6145, 8193, 12289, 16385, 24577];
+var SHOP_DIST_EXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+var SHOP_CL_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+
+function inflateRaw(src, max) {
+  var pos = 0, buf = 0, cnt = 0, n = 0;
+  var out = new Uint8Array(1024);
+  function bad() {
+    throw new Error("damaged");
+  }
+  function need(k) {
+    while (cnt < k) {
+      if (pos >= src.length) bad();
+      buf |= src[pos++] << cnt;
+      cnt += 8;
+    }
+    var v = buf & ((1 << k) - 1);
+    buf >>>= k;
+    cnt -= k;
+    return v;
+  }
+  function put(b) {
+    if (n >= max) bad();
+    if (n === out.length) {
+      var grown = new Uint8Array(out.length * 2);
+      grown.set(out);
+      out = grown;
+    }
+    out[n++] = b;
+  }
+  function table(lengths) {
+    var count = [], offs = [], sym = [], l, s;
+    for (l = 0; l < 16; l++) count[l] = offs[l] = 0;
+    for (s = 0; s < lengths.length; s++) count[lengths[s]]++;
+    count[0] = 0;
+    var left = 1;
+    for (l = 1; l < 16; l++) {
+      left = left * 2 - count[l];
+      if (left < 0) bad();
+    }
+    for (l = 1; l < 15; l++) offs[l + 1] = offs[l] + count[l];
+    for (s = 0; s < lengths.length; s++) if (lengths[s]) sym[offs[lengths[s]]++] = s;
+    return { count: count, sym: sym };
+  }
+  function decode(t) {
+    var code = 0, first = 0, index = 0;
+    for (var l = 1; l < 16; l++) {
+      code |= need(1);
+      var c = t.count[l];
+      if (code - c < first) return t.sym[index + (code - first)];
+      index += c;
+      first = (first + c) << 1;
+      code <<= 1;
+    }
+    return bad();
+  }
+  var last = 0;
+  while (!last) {
+    last = need(1);
+    var type = need(2);
+    var i, lit, dist;
+    if (type === 0) {
+      buf = 0;
+      cnt = 0;
+      if (pos + 4 > src.length) bad();
+      var len = src[pos] | (src[pos + 1] << 8);
+      if ((len ^ 0xffff) !== (src[pos + 2] | (src[pos + 3] << 8))) bad();
+      pos += 4;
+      if (pos + len > src.length) bad();
+      for (i = 0; i < len; i++) put(src[pos++]);
+      continue;
+    }
+    if (type === 1) {
+      var fl = [];
+      for (i = 0; i < 288; i++) fl[i] = i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8;
+      var fd = [];
+      for (i = 0; i < 30; i++) fd[i] = 5;
+      lit = table(fl);
+      dist = table(fd);
+    } else if (type === 2) {
+      var nlit = need(5) + 257, ndist = need(5) + 1, ncl = need(4) + 4;
+      var cl = [];
+      for (i = 0; i < 19; i++) cl[i] = 0;
+      for (i = 0; i < ncl; i++) cl[SHOP_CL_ORDER[i]] = need(3);
+      var clt = table(cl);
+      var lens = [];
+      while (lens.length < nlit + ndist) {
+        var s = decode(clt);
+        if (s < 16) {
+          lens.push(s);
+          continue;
+        }
+        var rep, val = 0;
+        if (s === 16) {
+          if (!lens.length) bad();
+          val = lens[lens.length - 1];
+          rep = 3 + need(2);
+        } else if (s === 17) rep = 3 + need(3);
+        else rep = 11 + need(7);
+        if (lens.length + rep > nlit + ndist) bad();
+        while (rep--) lens.push(val);
+      }
+      if (!lens[256]) bad();
+      lit = table(lens.slice(0, nlit));
+      dist = table(lens.slice(nlit));
+    } else bad();
+    for (;;) {
+      var sy = decode(lit);
+      if (sy < 256) put(sy);
+      else if (sy === 256) break;
+      else {
+        sy -= 257;
+        if (sy >= 29) bad();
+        var run = SHOP_LEN_BASE[sy] + need(SHOP_LEN_EXTRA[sy]);
+        var ds = decode(dist);
+        if (ds >= 30) bad();
+        var back = SHOP_DIST_BASE[ds] + need(SHOP_DIST_EXTRA[ds]);
+        if (back > n) bad();
+        for (i = 0; i < run; i++) put(out[n - back]);
+      }
+    }
+  }
+  if (pos !== src.length) bad(); // bytes after the end
+  return out.subarray(0, n);
+}
+
+// The text back into parts and things, or null if it isn't one.
+function parsePayload(text) {
+  var blocks = text.split("\n\n");
+  var groups = [], leftOff = [];
+  for (var b = 0; b < blocks.length; b++) {
+    var lines = blocks[b].split("\n");
+    if (lines[0].charAt(0) === "\t") {
+      if (b !== blocks.length - 1 || lines.length !== 1) return null;
+      leftOff = lines[0].slice(1).split("\t");
+      for (var k = 0; k < leftOff.length; k++) if (!leftOff[k]) return null;
+      continue;
+    }
+    if (!lines[0] || lines.length < 2) return null;
+    var items = [];
+    for (var j = 1; j < lines.length; j++) {
+      var low = lines[j].charAt(0) === "\t";
+      var f = (low ? lines[j].slice(1) : lines[j]).split("\t");
+      if (f.length > 2 || !f[0] || (f.length === 2 && !f[1])) return null;
+      items.push({ name: f[0], note: f[1] || "", low: low });
+    }
+    groups.push({ section: lines[0], items: items });
+  }
+  if (!groups.length) return null;
+  return { groups: groups, leftOff: leftOff };
+}
+
+// The link's "#" part (with or without the "#") back into the list:
+// {ok: true, key, groups: [{section, items: [{name, note, low}]}], leftOff},
+// or {ok: false, why: "none"} for no list, "damaged" for a broken one.
+// Never throws. key tells one link's list from another's (for the ticks).
+function unpackList(fragment) {
+  var damaged = { ok: false, why: "damaged" };
+  try {
+    var s = fragment == null ? "" : String(fragment);
+    if (s.charAt(0) === "#") s = s.slice(1);
+    if (!s) return { ok: false, why: "none" };
+    if (s.charAt(0) !== "1") return damaged;
+    var bytes = b64urlDecode(s.slice(1));
+    if (!bytes || bytes.length < 5) return damaged;
+    var m = bytes.length - 4;
+    var body = bytes.subarray(0, m);
+    var want = ((bytes[m] << 24) | (bytes[m + 1] << 16) | (bytes[m + 2] << 8) | bytes[m + 3]) >>> 0;
+    if (crc32(body) !== want) return damaged;
+    var text = new TextDecoder("utf-8", { fatal: true }).decode(inflateRaw(body, SHOP_MAX_TEXT));
+    var list = parsePayload(text);
+    if (!list) return damaged;
+    return { ok: true, key: s.slice(-6) + ":" + s.length, groups: list.groups, leftOff: list.leftOff };
+  } catch (e) {
+    return damaged;
+  }
+}
+// -- unpack: end --
+
+  // -- the page --
+  var STORE = "marv-shopping-list"; // ticks: {lists: [{key, ticks, at}]}, newest first
+  var KEEP = 10;
+  var NONE = "There's no list in this link. Ask Marv: Shopping, Take it with me, and point your phone's camera at the code.";
+  var DAMAGED = "This link's list is damaged, so it can't be shown. Ask Marv: Shopping, Take it with me, for a fresh code.";
+  var NOTE = "Ticks stay on this phone. They don't go back to Marv: tick them on Marv, or tell him, when you're home.";
+  var TICK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg>';
+  var root = document.querySelector(".app");
+  var memory = {}; // the ticks, when this phone won't keep them
+  var shown = { hash: null, list: null };
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  // "2" reads "x2"; any other amount as it was written.
+  function amountText(note) {
+    return /^[0-9]+$/.test(note) ? "x" + note : note;
+  }
+
+  // What to draw: the parts with things still to get, then Got it.
+  function view(list, ticks) {
+    var on = {};
+    for (var k = 0; k < ticks.length; k++) on[ticks[k]] = true;
+    var i = 0, toGet = [], got = [];
+    for (var g = 0; g < list.groups.length; g++) {
+      var items = [];
+      for (var t = 0; t < list.groups[g].items.length; t++) {
+        var it = list.groups[g].items[t];
+        var thing = { i: i, name: it.name, amount: amountText(it.note), low: it.low };
+        (on[i] ? got : items).push(thing);
+        i++;
+      }
+      if (items.length) toGet.push({ section: list.groups[g].section, items: items });
+    }
+    return { toGet: toGet, got: got, total: i, ticked: got.length, countText: got.length + " of " + i, done: got.length === i };
+  }
+
+  function readAll() {
+    var all = JSON.parse(localStorage.getItem(STORE) || "{}");
+    return all && Array.isArray(all.lists) ? all.lists : [];
+  }
+  function loadTicks(key, total) {
+    var ticks = memory[key];
+    if (!ticks) {
+      try {
+        var lists = readAll();
+        for (var k = 0; k < lists.length; k++) if (lists[k].key === key) ticks = lists[k].ticks;
+      } catch (e) {
+        ticks = null;
+      }
+    }
+    var out = [];
+    if (Array.isArray(ticks)) {
+      for (var j = 0; j < ticks.length; j++) {
+        var n = ticks[j];
+        if (typeof n === "number" && n >= 0 && n < total && Math.floor(n) === n && out.indexOf(n) < 0) out.push(n);
+      }
+    }
+    return out;
+  }
+  function saveTicks(key, ticks) {
+    memory[key] = ticks;
+    try {
+      var lists = [];
+      try {
+        lists = readAll();
+      } catch (e) {
+        lists = [];
+      }
+      var kept = [{ key: key, ticks: ticks, at: Date.now() }];
+      for (var k = 0; k < lists.length && kept.length < KEEP; k++) if (lists[k] && lists[k].key !== key) kept.push(lists[k]);
+      localStorage.setItem(STORE, JSON.stringify({ lists: kept }));
+    } catch (e) {
+      // Private browsing, or full: the ticks last this visit.
+    }
+  }
+
+  function row(thing, ticked, toggle) {
+    var b = el("button", "row");
+    b.setAttribute("type", "button");
+    b.setAttribute("aria-pressed", ticked ? "true" : "false");
+    var box = el("span", "box");
+    if (ticked) box.innerHTML = TICK;
+    var words = el("span", "words");
+    words.append(el("span", "name", thing.name));
+    if (thing.amount) words.append(el("span", "amount", thing.amount));
+    b.append(box, words);
+    if (thing.low && !ticked) b.append(el("span", "low", "Low"));
+    b.addEventListener("click", function () {
+      toggle(thing.i);
+    });
+    return b;
+  }
+
+  function render() {
+    var hash = location.hash || "";
+    if (shown.hash !== hash) shown = { hash: hash, list: unpackList(hash) };
+    var list = shown.list;
+    var head = el("header");
+    head.append(el("h1", "", "Shopping list"));
+    if (!list.ok) {
+      root.replaceChildren(head, el("p", "msg", list.why === "none" ? NONE : DAMAGED));
+      return;
+    }
+    var total = 0;
+    for (var g = 0; g < list.groups.length; g++) total += list.groups[g].items.length;
+    var ticks = loadTicks(list.key, total);
+    var v = view(list, ticks);
+    var count = el("p", "count", v.countText);
+    count.setAttribute("aria-label", v.countText + " ticked");
+    head.append(count);
+    var parts = [head];
+    if (list.leftOff.length) parts.push(el("p", "cut", "This code left some off: " + list.leftOff.join(", ") + "."));
+    function toggle(i) {
+      var at = ticks.indexOf(i);
+      if (at < 0) ticks.push(i);
+      else ticks.splice(at, 1);
+      saveTicks(list.key, ticks.slice());
+      render();
+    }
+    if (v.done) parts.push(el("p", "done", "All got."));
+    for (var p = 0; p < v.toGet.length; p++) {
+      var part = el("section", "part");
+      part.append(el("h2", "", v.toGet[p].section));
+      for (var t = 0; t < v.toGet[p].items.length; t++) part.append(row(v.toGet[p].items[t], false, toggle));
+      parts.push(part);
+    }
+    if (v.got.length) {
+      var gotPart = el("section", "part got");
+      gotPart.append(el("h2", "", "Got it"));
+      for (var q = 0; q < v.got.length; q++) gotPart.append(row(v.got[q], true, toggle));
+      parts.push(gotPart);
+    }
+    parts.push(el("p", "note", NOTE));
+    root.replaceChildren.apply(root, parts);
+  }
+
+  render();
+  addEventListener("hashchange", render);
+})();
+</script>
+</body>
+</html>
